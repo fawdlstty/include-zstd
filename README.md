@@ -24,18 +24,13 @@ cargo add include-zstd
 - `include_zstd::file_str!("path")`: reads a file and returns `&'static str` as UTF-8
 - `include_zstd::file_bytes!("path")`: reads a file and returns `&'static [u8]`
 
-> Path resolution for `include_zstd::file_str!` / `include_zstd::file_bytes!` is the same as `include_str!` / `include_bytes!`: relative paths are resolved from the directory of the source file where the macro is invoked.
-
 ### 4. Example
 
 ```rust
 fn main() {
-    let msg: &'static str = include_zstd::str!("hello include-zstd");
-    let raw: &'static [u8] = include_zstd::bytes!(b"\x00\x01\x02\x03");
-
-    let text: &'static str = include_zstd::file_str!("data/sample.txt");
-    let bytes: &'static [u8] = include_zstd::file_bytes!("data/sample.bin");
-
-    println!("msg={msg}, text_len={}, bytes_len={}, raw_len={}", text.len(), bytes.len(), raw.len());
+    let _msg: &'static str = include_zstd::str!("hello include-zstd");
+    let _raw: &'static [u8] = include_zstd::bytes!(b"\x00\x01\x02\x03");
+    let _text: &'static str = include_zstd::file_str!("data/sample.txt");
+    let _bytes: &'static [u8] = include_zstd::file_bytes!("data/sample.bin");
 }
 ```

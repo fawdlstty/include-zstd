@@ -1,10 +1,10 @@
 use proc_macro::TokenStream;
-use proc_macro_crate::{crate_name, FoundCrate};
+use proc_macro_crate::{FoundCrate, crate_name};
 use quote::quote;
 use std::fs;
 use std::path::{Path, PathBuf};
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, LitByteStr, LitStr, Token};
+use syn::{LitByteStr, LitStr, Token, parse_macro_input};
 
 struct FileMacroInput {
     source_file: Option<LitStr>,

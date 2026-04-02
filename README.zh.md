@@ -24,18 +24,13 @@ cargo add include-zstd
 - `include_zstd::file_str!("path")`：读取文件并按 UTF-8 返回 `&'static str`
 - `include_zstd::file_bytes!("path")`：读取文件并返回 `&'static [u8]`
 
-> `include_zstd::file_str!` / `include_zstd::file_bytes!` 的路径规则与 `include_str!` / `include_bytes!` 一致：相对路径按宏调用处源码文件所在目录解析。
-
 ### 4. 示例
 
 ```rust
 fn main() {
-    let msg: &'static str = include_zstd::str!("hello include-zstd");
-    let raw: &'static [u8] = include_zstd::bytes!(b"\x00\x01\x02\x03");
-
-    let text: &'static str = include_zstd::file_str!("data/sample.txt");
-    let bytes: &'static [u8] = include_zstd::file_bytes!("data/sample.bin");
-
-    println!("msg={msg}, text_len={}, bytes_len={}, raw_len={}", text.len(), bytes.len(), raw.len());
+    let _msg: &'static str = include_zstd::str!("hello include-zstd");
+    let _raw: &'static [u8] = include_zstd::bytes!(b"\x00\x01\x02\x03");
+    let _text: &'static str = include_zstd::file_str!("data/sample.txt");
+    let _bytes: &'static [u8] = include_zstd::file_bytes!("data/sample.bin");
 }
 ```
