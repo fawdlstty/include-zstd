@@ -1,0 +1,24 @@
+[package]
+name = "include-zstd-derive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/fawdlstty/include-zstd"
+homepage = "https://github.com/fawdlstty/include-zstd"
+description = "Procedural macro implementation for include-zstd compile-time compression macros."
+documentation = "https://docs.rs/include-zstd"
+authors = ["fawdlstty<f@fawdlstty.com>"]
+keywords = ["zstd", "macro", "include", "compression", "proc-macro"]
+categories = ["compression", "rust-patterns"]
+readme = "../README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate = "3.4.0"
+proc-macro2 = "1.0.95"
+quote = "1.0.40"
+syn = { version = "2.0.100", features = ["full"] }
+zstd = "0.13.3"

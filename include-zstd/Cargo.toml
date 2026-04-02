@@ -1,0 +1,18 @@
+[package]
+name = "include-zstd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/fawdlstty/include-zstd"
+homepage = "https://github.com/fawdlstty/include-zstd"
+description = "Compress data at compile time and include it as runtime-decompressible static bytes or strings."
+documentation = "https://docs.rs/include-zstd"
+authors = ["fawdlstty<f@fawdlstty.com>"]
+keywords = ["zstd", "macro", "include", "compression", "proc-macro"]
+categories = ["compression", "rust-patterns"]
+readme = "../README.md"
+
+[dependencies]
+include-zstd-derive = { version = "0.1.0", path = "../include-zstd-derive" }
+zstd = "0.13.3"

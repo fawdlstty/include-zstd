@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["include-zstd", "include-zstd-derive"]
+
+# cargo publish -p include-zstd-derive --allow-dirty --registry crates-io
+# cargo publish -p include-zstd --allow-dirty --registry crates-io
