@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use quote::quote;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -114,46 +115,25 @@ pub fn include_zstd(input: TokenStream) -> TokenStream {
     let path = parse_macro_input!(input as LitStr);
     let source_path = path.value();
 
-    // 对于 include_zstd! 宏，直接使用 invocation_source_file_abs 获取源文件路径
-    // 确保在 examples/ 目录中也能正确解析相对路径
-    let source_file_abs = invocation_source_file_abs();
-    let source_dir = source_file_abs.parent().unwrap_or(&source_file_abs);
-
-    let absolute_path = if Path::new(&source_path).is_absolute() {
-        PathBuf::from(&source_path)
-    } else {
-        source_dir.join(&source_path)
+    let absolute_path = match resolve_path(None, &source_path) {
+        Ok(path) => path,
+        Err(err) => {
+            return syn::Error::new(path.span(), err).to_compile_error().into();
+        }
     };
 
-    // 尝试读取文件元数据，如果失败则尝试在其他常见位置查找
-    let (metadata, absolute_path) = match fs::metadata(&absolute_path) {
-        Ok(m) => (m, absolute_path),
-        Err(_) => {
-            // Fallback: try to find the file in common locations
-            match find_file_in_candidates(&source_path, source_dir) {
-                Some(found_path) => match fs::metadata(&found_path) {
-                    Ok(m) => (m, found_path),
-                    Err(err) => {
-                        return syn::Error::new(
-                            path.span(),
-                            format!("failed to read metadata '{}': {err}", found_path.display()),
-                        )
-                        .to_compile_error()
-                        .into();
-                    }
-                },
-                None => {
-                    return syn::Error::new(
-                        path.span(),
-                        format!(
-                            "failed to read metadata '{}': file not found",
-                            absolute_path.display()
-                        ),
-                    )
-                    .to_compile_error()
-                    .into();
-                }
-            }
+    let metadata = match fs::metadata(&absolute_path) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            return syn::Error::new(
+                path.span(),
+                format!(
+                    "failed to read metadata '{}': {err}",
+                    absolute_path.display()
+                ),
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -297,36 +277,42 @@ fn resolve_path(source_file: Option<&str>, source_path: &str) -> Result<PathBuf,
     // Match `include_str!` semantics: always resolve relative paths against the
     // parent directory of the invocation's source file, using an absolute path
     // so the result is independent of the compiler's current working directory.
-    let source_file_abs = if let Some(source_file) = source_file {
-        absolutize_source_file(Path::new(source_file))
+    let source_file = if let Some(source_file) = source_file {
+        InvocationSourceFile {
+            path: absolutize_source_file(Path::new(source_file)),
+            reliable: true,
+        }
     } else {
         invocation_source_file_abs()
     };
 
-    let source_dir = source_file_abs.parent().ok_or_else(|| {
+    if !source_file.reliable {
+        if let Some(path) = resolve_path_from_source_literal(source_path) {
+            return Ok(path);
+        }
+    }
+
+    let source_dir = source_file.path.parent().ok_or_else(|| {
         format!(
             "failed to resolve include path '{}': invocation source file '{}' has no parent directory",
             source_path,
-            source_file_abs.display()
+            source_file.path.display()
         )
     })?;
 
     let absolute_path = source_dir.join(target_path);
 
-    // If the resolved path doesn't exist, try to find it in candidate locations
-    // (handles LSP analysis where path resolution may be inaccurate)
-    if !absolute_path.exists() {
-        if let Some(found_path) = find_file_in_candidates(source_path, source_dir) {
-            return Ok(found_path);
-        }
-    }
-
     Ok(absolute_path)
+}
+
+struct InvocationSourceFile {
+    path: PathBuf,
+    reliable: bool,
 }
 
 /// Return the absolute path of the source file that contains the macro
 /// invocation, mirroring how `include_str!` locates its base directory.
-fn invocation_source_file_abs() -> PathBuf {
+fn invocation_source_file_abs() -> InvocationSourceFile {
     let call_site = proc_macro::Span::call_site();
 
     // `local_file()` returns the canonical absolute on-disk path when the span
@@ -335,7 +321,10 @@ fn invocation_source_file_abs() -> PathBuf {
     if let Some(path) = call_site.local_file() {
         // If local_file() returns a file path (not a directory), return it
         if path.extension().is_some() || path.is_file() {
-            return path;
+            return InvocationSourceFile {
+                path,
+                reliable: true,
+            };
         }
         // If it returns a directory, it's likely from LSP analysis
         // Fall through to try other methods
@@ -347,65 +336,74 @@ fn invocation_source_file_abs() -> PathBuf {
     let file_path = Path::new(&file);
 
     if file_path.is_absolute() {
-        return file_path.to_path_buf();
+        return InvocationSourceFile {
+            reliable: file_path.is_file(),
+            path: file_path.to_path_buf(),
+        };
     }
 
     // Use CARGO_MANIFEST_DIR (crate root) to anchor relative paths.
     // In workspace projects, this points to the specific crate's directory.
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let manifest_path = PathBuf::from(&manifest_dir);
-        let candidate = manifest_path.join(file_path);
+    if !file.is_empty() {
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let manifest_path = PathBuf::from(&manifest_dir);
+            let candidate = manifest_path.join(file_path);
 
-        // Verify the candidate path's parent directory exists
-        if candidate.parent().map_or(false, |p| p.exists()) {
-            return candidate;
+            if candidate.is_file() {
+                return InvocationSourceFile {
+                    path: candidate,
+                    reliable: true,
+                };
+            }
+
+            // Keep the old fallback shape, but mark it unreliable so LSP can
+            // still recover by scanning source files for the path literal.
+            if candidate.parent().map_or(false, |p| p.exists()) {
+                return InvocationSourceFile {
+                    path: candidate,
+                    reliable: false,
+                };
+            }
+        }
+
+        // Last resort: use current working directory
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join(file_path);
+            if candidate.is_file() {
+                return InvocationSourceFile {
+                    path: candidate,
+                    reliable: true,
+                };
+            }
+            if candidate.parent().map_or(false, |p| p.exists()) {
+                return InvocationSourceFile {
+                    path: candidate,
+                    reliable: false,
+                };
+            }
         }
     }
 
-    // Last resort: use current working directory
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_path = PathBuf::from(&manifest_dir);
+        return InvocationSourceFile {
+            path: manifest_path.join("__include_zstd_unknown.rs"),
+            reliable: false,
+        };
+    }
+
     if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join(file_path);
-        if candidate.parent().map_or(false, |p| p.exists()) {
-            return candidate;
-        }
+        return InvocationSourceFile {
+            path: cwd.join("__include_zstd_unknown.rs"),
+            reliable: false,
+        };
     }
 
     // Final fallback: just return the relative path
-    file_path.to_path_buf()
-}
-
-/// Try to find a file in common candidate locations when standard path resolution fails.
-fn find_file_in_candidates(relative_path: &str, source_dir: &Path) -> Option<PathBuf> {
-    let file_name = Path::new(relative_path).file_name()?;
-
-    // Candidate locations to search:
-    // 1. Current directory (where cargo is invoked)
-    // 2. examples/ directory under current directory
-    // 3. src/ directory under current directory
-    // 4. Same directory as source file
-    // 5. CARGO_MANIFEST_DIR/examples/ (for LSP analysis in workspace projects)
-    let mut candidates = vec![
-        PathBuf::from(file_name),
-        PathBuf::from("examples").join(file_name),
-        PathBuf::from("src").join(file_name),
-        source_dir.join(file_name),
-    ];
-
-    // Add CARGO_MANIFEST_DIR based paths
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let manifest_path = PathBuf::from(&manifest_dir);
-        candidates.push(manifest_path.join(file_name));
-        candidates.push(manifest_path.join("examples").join(file_name));
-        candidates.push(manifest_path.join("src").join(file_name));
+    InvocationSourceFile {
+        path: file_path.to_path_buf(),
+        reliable: false,
     }
-
-    for candidate in candidates {
-        if candidate.exists() && candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
 }
 
 fn absolutize_source_file(source_file: &Path) -> PathBuf {
@@ -418,4 +416,112 @@ fn absolutize_source_file(source_file: &Path) -> PathBuf {
     }
 
     source_file.to_path_buf()
+}
+
+fn resolve_path_from_source_literal(source_path: &str) -> Option<PathBuf> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    resolve_path_from_source_literal_in(Path::new(&manifest_dir), source_path)
+}
+
+fn resolve_path_from_source_literal_in(manifest_dir: &Path, source_path: &str) -> Option<PathBuf> {
+    let mut matches = BTreeSet::new();
+    collect_paths_from_source_literal(manifest_dir, source_path, &mut matches);
+
+    let mut matches = matches.into_iter();
+    let first = matches.next()?;
+    if matches.next().is_none() {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn collect_paths_from_source_literal(
+    dir: &Path,
+    source_path: &str,
+    matches: &mut BTreeSet<PathBuf>,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_dir() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name == "target" || name.starts_with('.'))
+            {
+                continue;
+            }
+            collect_paths_from_source_literal(&path, source_path, matches);
+            continue;
+        }
+
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            collect_path_from_source_file(&path, source_path, matches);
+        }
+    }
+}
+
+fn collect_path_from_source_file(path: &Path, source_path: &str, matches: &mut BTreeSet<PathBuf>) {
+    let Ok(source) = fs::read_to_string(path) else {
+        return;
+    };
+    if !source.contains(source_path) {
+        return;
+    }
+
+    let Some(source_dir) = path.parent() else {
+        return;
+    };
+    let candidate = source_dir.join(source_path);
+    if !candidate.exists() {
+        return;
+    }
+
+    matches.insert(fs::canonicalize(&candidate).unwrap_or(candidate));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn source_literal_fallback_uses_matching_rust_file_parent() {
+        let fixture = std::env::temp_dir().join(format!(
+            "include_zstd_derive_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_dir = fixture.join("src/request_handler");
+        let asset_dir = fixture.join("assets");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&asset_dir).unwrap();
+        fs::write(asset_dir.join("key.pem"), "key").unwrap();
+        fs::write(
+            source_dir.join("auth_handler.rs"),
+            r#"fn key() -> &'static str { include_zstd::file_str!("../../assets/key.pem") }"#,
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_path_from_source_literal_in(&fixture, "../../assets/key.pem").unwrap();
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(asset_dir.join("key.pem")).unwrap()
+        );
+
+        fs::remove_dir_all(fixture).unwrap();
+    }
 }
